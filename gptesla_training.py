@@ -1,41 +1,26 @@
 import os
 
-# Set the API token as an environment variable
-os.environ["HF_TOKEN"] = "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"
-
-
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-
-model_ckpt = "shng2025/gptesla"
-
-tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
-config_small = AutoConfig.from_pretrained(
-    "gpt2", vocab_size=len(tokenizer), gradient_checkpointing=True
-)
-model_small = AutoModelForCausalLM.from_config(config_small)
-
-
-def model_size(model):
-    return sum(t.numel() for t in model.parameters())
-
-
-print(f"GPT-2 size: {model_size(model_small)/1000**2:.1f}M parameters")
-
-
-# model_small.save_pretrained("models/" + model_ckpt + "-small", push_to_hub=True)
-
-
-"""
-dir_name = "hf_model_dir"
-if not os.path.exists(dir_name):
-    os.makedirs(dir_name)
-    print(f"Directory '{dir_name}' was created.")
-else:
-    print(f"Directory '{dir_name}' already exists.")
-"""
+import datasets, transformers
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, set_seed
+from transformers.optimization import get_scheduler
+from datasets import load_dataset, DownloadConfig
 
 import torch
 from torch.utils.data import IterableDataset
+from torch.utils.data.dataloader import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from torch.optim import AdamW
+
+import logging
+import wandb
+from huggingface_hub import Repository, create_branch
+from accelerate import Accelerator
+from argparse import Namespace
+
+
+# Set the API token as an environment variable
+os.environ["HF_TOKEN"] = "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"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 class ConstantLengthDataset(IterableDataset):
@@ -62,11 +47,11 @@ class ConstantLengthDataset(IterableDataset):
             while True:
                 if buffer_len >= self.input_characters:
                     m = f"Buffer full: {buffer_len}>={self.input_characters:.0f}"
-                    print(m)
+                    # print(m)
                     break
                 try:
                     m = f"Fill buffer: {buffer_len}<{self.input_characters:.0f}"
-                    print(m)
+                    # print(m)
                     buffer.append(next(iterator)["content"])
                     buffer_len += len(buffer[-1])
                 except StopIteration:
@@ -85,55 +70,8 @@ class ConstantLengthDataset(IterableDataset):
                     yield torch.tensor(input_ids)
 
 
-# Testing the Dataloader
-from datasets import load_dataset, DownloadConfig
-
-dataset = load_dataset("shng2025/gptesla-train", split="train", streaming=True)
-
-shuffled_dataset = dataset.shuffle(buffer_size=100)
-constant_length_dataset = ConstantLengthDataset(
-    tokenizer, shuffled_dataset, num_of_sequences=10
-)
-dataset_iterator = iter(constant_length_dataset)
-
-lengths = [len(b) for _, b in zip(range(5), dataset_iterator)]
-print(f"Lengths of the sequences: {lengths}")
-
-
-from argparse import Namespace
-
-# GPTesla - 111M param setup in comment. Modification to make lighter training requirement needed
-config = {
-    "train_batch_size": 12,  # 12
-    "valid_batch_size": 12,  # 12
-    "weight_decay": 0.1,
-    "shuffle_buffer": 1000,
-    "learning_rate": 5e-4,  # 5e-4
-    "lr_scheduler_type": "cosine",
-    "num_warmup_steps": 100,  # 2000
-    "gradient_accumulation_steps": 1,  # 1
-    "max_train_steps": 2000,  # 150000
-    "max_eval_steps": 10,
-    "seq_length": 1024,
-    "seed": 1,
-    "save_checkpoint_steps": 500,
-}  # 15000
-
-args = Namespace(**config)
-
-
-from torch.utils.tensorboard import SummaryWriter
-import logging
-import wandb
-from huggingface_hub import Repository
-import datasets, transformers
-
-
 def setup_logging(project_name):
     logger = logging.getLogger(__name__)
-
-    # setting up log directory
-    import os
 
     dir_name = "./log"
     if not os.path.exists(dir_name):
@@ -142,12 +80,13 @@ def setup_logging(project_name):
     else:
         print(f"Directory '{dir_name}' already exists.")
 
+    # setting up log directory
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
         handlers=[
-            logging.FileHandler(f"./log/debug_{accelerator.process_index}.log"),
+            logging.FileHandler(f"log/debug_{accelerator.process_index}.log"),
             logging.StreamHandler(),
         ],
     )
@@ -168,16 +107,6 @@ def setup_logging(project_name):
     return logger, tb_writer, run_name
 
 
-def log_metrics(step, metrics):
-    logger.info(f"Step {step}: {metrics}")
-    if accelerator.is_main_process:
-        wandb.log(metrics)
-        [tb_writer.add_scalar(k, v, step) for k, v in metrics.items()]
-
-
-from torch.utils.data.dataloader import DataLoader
-
-
 def create_dataloaders(dataset_name):
     train_data = load_dataset(dataset_name + "-train", split="train", streaming=True)
     train_data = train_data.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)
@@ -195,6 +124,13 @@ def create_dataloaders(dataset_name):
     train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size)
     eval_dataloader = DataLoader(valid_dataset, batch_size=args.valid_batch_size)
     return train_dataloader, eval_dataloader
+
+
+def log_metrics(step, metrics):
+    logger.info(f"Step {step}: {metrics}")
+    if accelerator.is_main_process:
+        wandb.log(metrics)
+        [tb_writer.add_scalar(k, v, step) for k, v in metrics.items()]
 
 
 def get_grouped_params(model, no_decay=["bias", "LayerNorm.weight"]):
@@ -230,31 +166,51 @@ def evaluate():
     return loss.item(), perplexity.item()
 
 
-from transformers import set_seed
-from accelerate import Accelerator
+# Accelerator
+accelerator = Accelerator(dispatch_batches=True)
+acc_state = {str(k): str(v) for k, v in accelerator.state.__dict__.items()}
 
+project_name = "shng2025/gptesla-small"
+dataset_name = "shng2025/gptesla"
+
+# GPTesla - 111M param setup in comment. Modification to make lighter training requirement needed
+config = {
+    "train_batch_size": 12,  # 12
+    "valid_batch_size": 12,  # 12
+    "weight_decay": 0.1,
+    "shuffle_buffer": 1000,
+    "learning_rate": 5e-4,  # 5e-4
+    "lr_scheduler_type": "cosine",
+    "num_warmup_steps": 100,  # 2000
+    "gradient_accumulation_steps": 1,  # 1
+    "max_train_steps": 2000,  # 150000
+    "max_eval_steps": 10,
+    "seq_length": 1024,
+    "seed": 1,
+    "save_checkpoint_steps": 50,
+}  # 15000
+
+args = Namespace(**config, **acc_state)
+samples_per_step = accelerator.state.num_processes * args.train_batch_size
 set_seed(args.seed)
 
-# Accelerator
-accelerator = Accelerator()
-samples_per_step = accelerator.state.num_processes * args.train_batch_size
-
 # Logging
-project_name = "shng2025/gptesla-small"
 logger, tb_writer, run_name = setup_logging(project_name.split("/")[1])
 logger.info(accelerator.state)
 
 # Load model and tokenizer
 if accelerator.is_main_process:
+    new_branch_name = run_name
+    create_branch(project_name, repo_type="model", branch=new_branch_name)
     hf_repo = Repository("./", clone_from=project_name, revision=run_name)
-model = AutoModelForCausalLM.from_pretrained("./", gradient_checkpointing=True)
+
+model = AutoModelForCausalLM.from_pretrained("./")  # , gradient_checkpointing=True)
 tokenizer = AutoTokenizer.from_pretrained("./")
 
 # Load dataset and dataloader
 train_dataloader, eval_dataloader = create_dataloaders(dataset_name)
 
 # Prepare the optimizer and learning rate scheduler
-dataset_name = "shng2025/gptesla"
 optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
 lr_scheduler = get_scheduler(
     name=args.lr_scheduler_type,
@@ -302,9 +258,7 @@ for step, batch in enumerate(train_dataloader, start=1):
         unwrapped_model = accelerator.unwrap_model(model)
         if accelerator.is_main_process:
             unwrapped_model.save_pretrained("./")
-            hf_repo.push_to_hub(
-                commit_message=f"step {step}"
-            )  # IsADirectoryError: [Errno 21] Is a directory: '/dli/hf_model_dir/./wandb/latest-run'
+            hf_repo.push_to_hub(commit_message=f"step {step}")
         model.train()
     if completed_steps >= args.max_train_steps:
         break
