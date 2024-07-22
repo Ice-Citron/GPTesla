@@ -19,7 +19,6 @@ from argparse import Namespace
 
 
 # Set the API token as an environment variable
-os.environ["HF_TOKEN"] = "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"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -91,7 +90,7 @@ def setup_logging(project_name):
         ],
     )
     if accelerator.is_main_process:  # We only want to set up logging once
-        wandb.init(project=project_name, config=args)
+        wandb.init(project=project_name, config=args, dir="../wandb")
         run_name = wandb.run.name
         tb_writer = SummaryWriter()
         tb_writer.add_hparams(vars(args), {"0": 0})
@@ -121,8 +120,12 @@ def create_dataloaders(dataset_name):
         tokenizer, valid_data, seq_length=args.seq_length
     )
 
-    train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size)
-    eval_dataloader = DataLoader(valid_dataset, batch_size=args.valid_batch_size)
+    train_dataloader = DataLoader(
+        train_dataset, batch_size=args.train_batch_size, num_workers=96
+    )
+    eval_dataloader = DataLoader(
+        valid_dataset, batch_size=args.valid_batch_size, num_workers=96
+    )
     return train_dataloader, eval_dataloader
 
 
@@ -181,13 +184,13 @@ config = {
     "shuffle_buffer": 1000,
     "learning_rate": 5e-4,  # 5e-4
     "lr_scheduler_type": "cosine",
-    "num_warmup_steps": 100,  # 2000
+    "num_warmup_steps": 700,  # 2000
     "gradient_accumulation_steps": 1,  # 1
-    "max_train_steps": 2000,  # 150000
+    "max_train_steps": 50000,  # 150000
     "max_eval_steps": 10,
     "seq_length": 1024,
     "seed": 1,
-    "save_checkpoint_steps": 50,
+    "save_checkpoint_steps": 5000,
 }  # 15000
 
 args = Namespace(**config, **acc_state)
