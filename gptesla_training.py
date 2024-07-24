@@ -190,7 +190,7 @@ config = {
     "max_eval_steps": 10,
     "seq_length": 1024,
     "seed": 1,
-    "save_checkpoint_steps": 5000,
+    "save_checkpoint_steps": 50,
 }  # 15000
 
 args = Namespace(**config, **acc_state)
@@ -260,6 +260,12 @@ for step, batch in enumerate(train_dataloader, start=1):
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
         if accelerator.is_main_process:
+            print(model.state_dict())
+            print(optimizer.state_dict())
+            print(steps)
+            print(train_dataloader.state_dict())
+            print(eval_dataloader.state_dict())
+
             unwrapped_model.save_pretrained("./")
             hf_repo.push_to_hub(commit_message=f"step {step}")
         model.train()
