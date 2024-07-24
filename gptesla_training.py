@@ -124,7 +124,7 @@ def create_dataloaders(dataset_name):
         train_dataset, batch_size=args.train_batch_size, num_workers=96
     )
     eval_dataloader = DataLoader(
-        valid_dataset, batch_size=args.valid_batch_size, num_workers=96
+        valid_dataset, batch_size=args.valid_batch_size, num_workers=1
     )
     return train_dataloader, eval_dataloader
 
