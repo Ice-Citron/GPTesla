@@ -21,54 +21,8 @@ from argparse import Namespace
 # Set the API token as an environment variable
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-
-class ConstantLengthDataset(IterableDataset):
-
-    def __init__(
-        self,
-        tokenizer,
-        dataset,
-        seq_length=1024,
-        num_of_sequences=1024,
-        chars_per_token=3.6,
-    ):
-        self.tokenizer = tokenizer
-        self.concat_token_id = tokenizer.eos_token_id
-        self.dataset = dataset
-        self.seq_length = seq_length
-        self.input_characters = seq_length * chars_per_token * num_of_sequences
-
-    def __iter__(self):
-        iterator = iter(self.dataset)
-        more_examples = True
-        while more_examples:
-            buffer, buffer_len = [], 0
-            while True:
-                if buffer_len >= self.input_characters:
-                    m = f"Buffer full: {buffer_len}>={self.input_characters:.0f}"
-                    # print(m)
-                    break
-                try:
-                    m = f"Fill buffer: {buffer_len}<{self.input_characters:.0f}"
-                    # print(m)
-                    buffer.append(next(iterator)["content"])
-                    buffer_len += len(buffer[-1])
-                except StopIteration:
-                    # iterator = iter(self.dataset)
-                    more_examples = False
-                    break
-
-            all_token_ids = []
-            tokenized_inputs = self.tokenizer(buffer, truncation=False)
-            for tokenized_input in tokenized_inputs["input_ids"]:
-                all_token_ids.extend(tokenized_input + [self.concat_token_id])
-
-            for i in range(0, len(all_token_ids), self.seq_length):
-                input_ids = all_token_ids[i : i + self.seq_length]
-                if len(input_ids) == self.seq_length:
-                    yield torch.tensor(input_ids)
-
-
+# need a "Continue logging function"
+"""
 def setup_logging(project_name):
     logger = logging.getLogger(__name__)
 
@@ -104,8 +58,10 @@ def setup_logging(project_name):
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
     return logger, tb_writer, run_name
+"""
 
-
+# dataloaders. Not needed
+""" 
 def create_dataloaders(dataset_name):
     train_data = load_dataset(dataset_name + "-train", split="train", streaming=True)
     train_data = train_data.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)
@@ -127,6 +83,7 @@ def create_dataloaders(dataset_name):
         valid_dataset, batch_size=args.valid_batch_size, num_workers=1
     )
     return train_dataloader, eval_dataloader
+"""
 
 
 def log_metrics(step, metrics):
