@@ -21,47 +21,8 @@ from argparse import Namespace
 # Set the API token as an environment variable
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# need a "Continue logging function"
-"""
-def setup_logging(project_name):
-    logger = logging.getLogger(__name__)
 
-    dir_name = "./log"
-    if not os.path.exists(dir_name):
-        os.makedirs(dir_name)
-        print(f"Directory '{dir_name}' was created.")
-    else:
-        print(f"Directory '{dir_name}' already exists.")
-
-    # setting up log directory
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
-        handlers=[
-            logging.FileHandler(f"log/debug_{accelerator.process_index}.log"),
-            logging.StreamHandler(),
-        ],
-    )
-    if accelerator.is_main_process:  # We only want to set up logging once
-        wandb.init(project=project_name, config=args, dir="./../")
-        run_name = wandb.run.name
-        tb_writer = SummaryWriter()
-        tb_writer.add_hparams(vars(args), {"0": 0})
-        logger.setLevel(logging.INFO)
-        datasets.utils.logging.set_verbosity_debug()
-        transformers.utils.logging.set_verbosity_info()
-    else:
-        tb_writer = None
-        run_name = ""
-        logger.setLevel(logging.ERROR)
-        datasets.utils.logging.set_verbosity_error()
-        transformers.utils.logging.set_verbosity_error()
-    return logger, tb_writer, run_name
-"""
-
-
-def checkpoint_state():
+def save_checkpoint_state(step):
 
     checkpoint = {
         "lr_scheduler": lr_scheduler.state_dict(),
@@ -69,20 +30,31 @@ def checkpoint_state():
         "logger": logger,
         "tb_writer": tb_writer,
         "run_name": run_name,
+        "optimizer": optimizer
     }
-    torch.save(checkpoint, f"checkpoint_{step}.pth")
-    # Use Accelerate's built-in method if it covers all needs
-    accelerator.save_state(output_dir="my_checkpoint")
+    torch.save(checkpoint, f"torch_checkpoint/checkpoint_{step}.pth")
+
+
+def load_checkpoint_torch(step, lr_scheduler, completed_steps, logger, tb_writer, run_name, optimizer):
+
+    checkpoint = torch.load(f"torch_checkpoint/checkpoint_{step}.pth")
+    lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+    completed_steps.load_state_dict(checkpoint["completed_steps"])
+    logger.load_state_dict(checkpoint["logger"])
+    tb_writer.load_state_dict(checkpoint["tb_writer"])
+    run_name.load_state_dict(checkpoint["run_name"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+
+    return step, lr_scheduler, completed_steps, logger, tb_writer, run_name, optimizer
 
 
 def continue_logging(project_name, run_name, logger):
     # for tb_writer and logger will just use the states loaded from torch.save()
     # will only try to resume wandb
 
-    wandb.resume(run_name=run_name)
-
     if accelerator.is_main_process:  # We only want to set up logging once
-        wandb.init(project=project_name, config=args, dir="./../")
+        #wandb.init(project=project_name, config=args, dir="./../")
+        wandb.init(project=project_name, id=run_name, resume="must", config=args, dir='./../')
         logger.setLevel(logging.INFO)
         datasets.utils.logging.set_verbosity_debug()
         transformers.utils.logging.set_verbosity_info()
@@ -98,6 +70,17 @@ def log_metrics(step, metrics):
         wandb.log(metrics)
         [tb_writer.add_scalar(k, v, step) for k, v in metrics.items()]
 
+def get_grouped_params(model, no_decay=["bias", "LayerNorm.weight"]):
+    params_with_wd, params_without_wd = [], []
+    for n, p in model.named_parameters():
+        if any(nd in n for nd in no_decay):
+            params_without_wd.append(p)
+        else:
+            params_with_wd.append(p)
+    return [
+        {"params": params_with_wd, "weight_decay": args.weight_decay},
+        {"params": params_without_wd, "weight_decay": 0.0},
+    ]
 
 def evaluate():
     model.eval()
@@ -147,9 +130,28 @@ args = Namespace(**config, **acc_state)
 samples_per_step = accelerator.state.num_processes * args.train_batch_size
 set_seed(args.seed)
 
-# Logging
-logger, tb_writer, run_name = "SETUP NEEDED"
-logger.info(accelerator.state)
+
+# Loading torch checkpoint
+current_step = int(input("latest_step"))
+optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
+lr_scheduler = get_scheduler(
+    name=args.lr_scheduler_type,
+    optimizer=optimizer,
+    num_warmup_steps=args.num_warmup_steps,
+    num_training_steps=args.max_train_steps,
+)
+completed_steps = 0
+logger = logging.getLogger(__name__)
+tb_writer = SummaryWriter()
+run_name = ""
+lr_scheduler, completed_steps, logger, tb_writer, run_name, optimizer = load_checkpoint_torch(current_step, lr_scheduler, completed_steps, logger, tb_writer, run_name, optimizer)
+
+print(current_step)
+print(lr_scheduler)
+print(logger)
+print(tb_writer)
+print(run_name)
+
 
 # Load model and tokenizer
 if accelerator.is_main_process:
@@ -161,11 +163,6 @@ tokenizer = AutoTokenizer.from_pretrained("./")
 # Load dataset and dataloader
 train_dataloader, eval_dataloader = create_dataloaders(dataset_name)
 
-# Load optimizer and learning rate scheduler
-optimizer = ""  # likely no longer needed
-lr_scheduler = ""
-
-
 def get_lr():
     return optimizer.param_groups[0]["lr"]
 
@@ -174,21 +171,19 @@ def get_lr():
 - completed_steps
 """
 
+
+# advancing dataloader to correct position
+for i, _ in enumerate(train_dataloader):
+    if i >= completed_steps:
+        break
+for i, _ in enumerate(eval_dataloader):
+    if i >= (completed_steps // args.save_checkpoint_steps) * args.max_eval_steps:
+        break
+
 # Prepare everything with our `accelerator` (order of args is not important)
 model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
     model, optimizer, train_dataloader, eval_dataloader
 )
-
-
-# advancing dataloader to correct position
-completed_steps = ""
-
-for i, _ in enumerate(train_dataloader):
-    if i >= completed_steps - 1:
-        break
-for i, _ in enumerate(eval_dataloader):
-    if i >= (completed_steps // args.save_checkpoint_steps) * args.max_eval_steps - 1:
-        break
 
 # Train model
 model.train()
@@ -217,13 +212,7 @@ for step, batch in enumerate(train_dataloader, start=completed_steps + 1):
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
         if accelerator.is_main_process:
-            # print(model.state_dict())
-            # print(optimizer.state_dict())
-            # print(steps)
-            # print(train_dataloader.state_dict())
-            # print(eval_dataloader.state_dict())
-            worker_info = torch.utils.data.get_worker_info()
-            print(worker_info)
+            save_checkpoint_state(step)
             unwrapped_model.save_pretrained("./")
             accelerator.save_state(output_dir="my_checkpoint")
             hf_repo.push_to_hub(commit_message=f"step {step}")

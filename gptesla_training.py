@@ -22,6 +22,19 @@ from argparse import Namespace
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+def save_checkpoint_state(step):
+
+    checkpoint = {
+        "lr_scheduler": lr_scheduler.state_dict(),
+        "completed_steps": completed_steps,
+        "logger": logger,
+        "tb_writer": tb_writer,
+        "run_name": run_name,
+        "optimizer": optimizer
+    }
+    torch.save(checkpoint, f"torch_checkpoint/checkpoint_{step}.pth")
+
+
 class ConstantLengthDataset(IterableDataset):
 
     def __init__(
@@ -260,11 +273,7 @@ for step, batch in enumerate(train_dataloader, start=1):
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
         if accelerator.is_main_process:
-            # print(model.state_dict())
-            # print(optimizer.state_dict())
-            # print(steps)
-            # print(train_dataloader.state_dict())
-            # print(eval_dataloader.state_dict())
+            save_checkpoint_state()
             worker_info = torch.utils.data.get_worker_info()
             print(worker_info)
             unwrapped_model.save_pretrained("./")
