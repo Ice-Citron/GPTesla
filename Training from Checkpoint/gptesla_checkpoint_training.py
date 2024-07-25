@@ -22,46 +22,128 @@ from argparse import Namespace
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def save_checkpoint_state(step):
+def save_checkpoint_state():
+
+    dir_name = "./torch_checkpoint"
+    os.makedirs(dir_name, exist_ok=True)
 
     checkpoint = {
         "lr_scheduler": lr_scheduler.state_dict(),
         "completed_steps": completed_steps,
-        "logger": logger,
-        "tb_writer": tb_writer,
         "run_name": run_name,
         "optimizer": optimizer
     }
-    torch.save(checkpoint, f"torch_checkpoint/checkpoint_{step}.pth")
+    torch.save(checkpoint, f"torch_checkpoint/latest_checkpoint.pth")
 
 
-def load_checkpoint_torch(step, lr_scheduler, completed_steps, logger, tb_writer, run_name, optimizer):
+def load_checkpoint_torch(step, lr_scheduler, completed_steps, run_name, optimizer):
 
     checkpoint = torch.load(f"torch_checkpoint/checkpoint_{step}.pth")
     lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-    completed_steps.load_state_dict(checkpoint["completed_steps"])
-    logger.load_state_dict(checkpoint["logger"])
-    tb_writer.load_state_dict(checkpoint["tb_writer"])
-    run_name.load_state_dict(checkpoint["run_name"])
+    completed_steps = checkpoint["completed_steps"]
+    run_name = checkpoint["run_name"]
     optimizer.load_state_dict(checkpoint["optimizer"])
 
-    return step, lr_scheduler, completed_steps, logger, tb_writer, run_name, optimizer
+    return step, lr_scheduler, completed_steps, run_name, optimizer
 
 
-def continue_logging(project_name, run_name, logger):
-    # for tb_writer and logger will just use the states loaded from torch.save()
-    # will only try to resume wandb
+class ConstantLengthDataset(IterableDataset):
+
+    def __init__(
+        self,
+        tokenizer,
+        dataset,
+        seq_length=1024,
+        num_of_sequences=1024,
+        chars_per_token=3.6,
+    ):
+        self.tokenizer = tokenizer
+        self.concat_token_id = tokenizer.eos_token_id
+        self.dataset = dataset
+        self.seq_length = seq_length
+        self.input_characters = seq_length * chars_per_token * num_of_sequences
+
+    def __iter__(self):
+        iterator = iter(self.dataset)
+        more_examples = True
+        while more_examples:
+            buffer, buffer_len = [], 0
+            while True:
+                if buffer_len >= self.input_characters:
+                    m = f"Buffer full: {buffer_len}>={self.input_characters:.0f}"
+                    # print(m)
+                    break
+                try:
+                    m = f"Fill buffer: {buffer_len}<{self.input_characters:.0f}"
+                    # print(m)
+                    buffer.append(next(iterator)["content"])
+                    buffer_len += len(buffer[-1])
+                except StopIteration:
+                    # iterator = iter(self.dataset)
+                    more_examples = False
+                    break
+
+            all_token_ids = []
+            tokenized_inputs = self.tokenizer(buffer, truncation=False)
+            for tokenized_input in tokenized_inputs["input_ids"]:
+                all_token_ids.extend(tokenized_input + [self.concat_token_id])
+
+            for i in range(0, len(all_token_ids), self.seq_length):
+                input_ids = all_token_ids[i : i + self.seq_length]
+                if len(input_ids) == self.seq_length:
+                    yield torch.tensor(input_ids)
+
+
+def continue_logging(project_name, run_name):
+    logger = logging.getLogger(__name__)
+
+    dir_name = "./log"
+    if not os.path.exists(dir_name):
+        os.makedirs(dir_name)
+        print(f"Directory '{dir_name}' was created.")
+    else:
+        print(f"Directory '{dir_name}' already exists.")
+
+    # setting up log directory
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+        handlers=[
+            logging.FileHandler(f"log/debug_{accelerator.process_index}.log"),
+            logging.StreamHandler(),
+        ],
+    )
 
     if accelerator.is_main_process:  # We only want to set up logging once
         #wandb.init(project=project_name, config=args, dir="./../")
         wandb.init(project=project_name, id=run_name, resume="must", config=args, dir='./../')
+        run_name = wandb.run.name
+        tb_writer = SummaryWriter()
+        tb_writer.add_hparams(vars(args), {"0": 0})
         logger.setLevel(logging.INFO)
         datasets.utils.logging.set_verbosity_debug()
         transformers.utils.logging.set_verbosity_info()
     else:
+        tb_writer = None
+        run_name = ""
         logger.setLevel(logging.ERROR)
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
+
+        return logger, tb_writer, run_name
+    
+def create_dataloaders(dataset_name):
+    train_data = load_dataset(dataset_name + "-train", split="train", streaming=True)
+    train_data = train_data.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)
+    valid_data = load_dataset(dataset_name + "-valid", split="validation", streaming=True)
+
+    train_dataset = ConstantLengthDataset(tokenizer, train_data, seq_length=args.seq_length)
+    valid_dataset = ConstantLengthDataset(tokenizer, valid_data, seq_length=args.seq_length)
+
+    train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, num_workers=96)
+    eval_dataloader = DataLoader(valid_dataset, batch_size=args.valid_batch_size, num_workers=1)
+    return train_dataloader, eval_dataloader
 
 
 def log_metrics(step, metrics):
@@ -131,6 +213,13 @@ samples_per_step = accelerator.state.num_processes * args.train_batch_size
 set_seed(args.seed)
 
 
+model = AutoModelForCausalLM.from_pretrained("./")  # , gradient_checkpointing=True)
+tokenizer = AutoTokenizer.from_pretrained("./")
+
+# Load dataset and dataloader
+train_dataloader, eval_dataloader = create_dataloaders(dataset_name)
+
+
 # Loading torch checkpoint
 current_step = int(input("latest_step"))
 optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
@@ -141,35 +230,22 @@ lr_scheduler = get_scheduler(
     num_training_steps=args.max_train_steps,
 )
 completed_steps = 0
-logger = logging.getLogger(__name__)
-tb_writer = SummaryWriter()
 run_name = ""
-lr_scheduler, completed_steps, logger, tb_writer, run_name, optimizer = load_checkpoint_torch(current_step, lr_scheduler, completed_steps, logger, tb_writer, run_name, optimizer)
+lr_scheduler, completed_steps, run_name, optimizer = load_checkpoint_torch(current_step, lr_scheduler, completed_steps, run_name, optimizer)
 
 print(current_step)
 print(lr_scheduler)
-print(logger)
-print(tb_writer)
 print(run_name)
+
+logger, tb_writer, run_name = continue_logging(project_name, run_name)
 
 
 # Load model and tokenizer
 if accelerator.is_main_process:
     hf_repo = Repository("./", clone_from=project_name, revision=run_name)
 
-model = AutoModelForCausalLM.from_pretrained("./")  # , gradient_checkpointing=True)
-tokenizer = AutoTokenizer.from_pretrained("./")
-
-# Load dataset and dataloader
-train_dataloader, eval_dataloader = create_dataloaders(dataset_name)
-
 def get_lr():
     return optimizer.param_groups[0]["lr"]
-
-
-"""
-- completed_steps
-"""
 
 
 # advancing dataloader to correct position

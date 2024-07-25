@@ -22,17 +22,18 @@ from argparse import Namespace
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def save_checkpoint_state(step):
+def save_checkpoint_state():
+
+    dir_name = "./torch_checkpoint"
+    os.makedirs(dir_name, exist_ok=True)
 
     checkpoint = {
         "lr_scheduler": lr_scheduler.state_dict(),
         "completed_steps": completed_steps,
-        "logger": logger,
-        "tb_writer": tb_writer,
         "run_name": run_name,
         "optimizer": optimizer
     }
-    torch.save(checkpoint, f"torch_checkpoint/checkpoint_{step}.pth")
+    torch.save(checkpoint, f"torch_checkpoint/latest_checkpoint.pth")
 
 
 class ConstantLengthDataset(IterableDataset):
@@ -122,23 +123,13 @@ def setup_logging(project_name):
 def create_dataloaders(dataset_name):
     train_data = load_dataset(dataset_name + "-train", split="train", streaming=True)
     train_data = train_data.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)
-    valid_data = load_dataset(
-        dataset_name + "-valid", split="validation", streaming=True
-    )
+    valid_data = load_dataset(dataset_name + "-valid", split="validation", streaming=True)
 
-    train_dataset = ConstantLengthDataset(
-        tokenizer, train_data, seq_length=args.seq_length
-    )
-    valid_dataset = ConstantLengthDataset(
-        tokenizer, valid_data, seq_length=args.seq_length
-    )
+    train_dataset = ConstantLengthDataset(tokenizer, train_data, seq_length=args.seq_length)
+    valid_dataset = ConstantLengthDataset(tokenizer, valid_data, seq_length=args.seq_length)
 
-    train_dataloader = DataLoader(
-        train_dataset, batch_size=args.train_batch_size, num_workers=96
-    )
-    eval_dataloader = DataLoader(
-        valid_dataset, batch_size=args.valid_batch_size, num_workers=1
-    )
+    train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, num_workers=96)
+    eval_dataloader = DataLoader(valid_dataset, batch_size=args.valid_batch_size, num_workers=1)
     return train_dataloader, eval_dataloader
 
 
@@ -274,8 +265,6 @@ for step, batch in enumerate(train_dataloader, start=1):
         unwrapped_model = accelerator.unwrap_model(model)
         if accelerator.is_main_process:
             save_checkpoint_state()
-            worker_info = torch.utils.data.get_worker_info()
-            print(worker_info)
             unwrapped_model.save_pretrained("./")
             accelerator.save_state(output_dir="my_checkpoint")
             hf_repo.push_to_hub(commit_message=f"step {step}")
