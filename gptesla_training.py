@@ -31,7 +31,8 @@ def save_checkpoint_state():
         "lr_scheduler": lr_scheduler.state_dict(),
         "completed_steps": completed_steps,
         "run_name": run_name,
-        "optimizer": optimizer
+        "optimizer": optimizer.state_dict(),
+        "run_id": wandb_id
     }
     torch.save(checkpoint, f"torch_checkpoint/latest_checkpoint.pth")
 
@@ -106,6 +107,7 @@ def setup_logging(project_name):
     if accelerator.is_main_process:  # We only want to set up logging once
         wandb.init(project=project_name, config=args, dir="./../")
         run_name = wandb.run.name
+        run_id = wandb.run.id
         tb_writer = SummaryWriter()
         tb_writer.add_hparams(vars(args), {"0": 0})
         logger.setLevel(logging.INFO)
@@ -117,7 +119,7 @@ def setup_logging(project_name):
         logger.setLevel(logging.ERROR)
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
-    return logger, tb_writer, run_name
+    return logger, tb_writer, run_name, run_id
 
 
 def create_dataloaders(dataset_name):
@@ -202,7 +204,7 @@ samples_per_step = accelerator.state.num_processes * args.train_batch_size
 set_seed(args.seed)
 
 # Logging
-logger, tb_writer, run_name = setup_logging(project_name.split("/")[1])
+logger, tb_writer, run_name, wandb_id = setup_logging(project_name.split("/")[1])
 logger.info(accelerator.state)
 
 # Load model and tokenizer
@@ -236,6 +238,8 @@ model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
     model, optimizer, train_dataloader, eval_dataloader
 )
 
+print(wandb_id)
+
 # Train model
 model.train()
 completed_steps = 0
@@ -266,7 +270,6 @@ for step, batch in enumerate(train_dataloader, start=1):
         if accelerator.is_main_process:
             save_checkpoint_state()
             unwrapped_model.save_pretrained("./")
-            accelerator.save_state(output_dir="my_checkpoint")
             hf_repo.push_to_hub(commit_message=f"step {step}")
         model.train()
     if completed_steps >= args.max_train_steps:

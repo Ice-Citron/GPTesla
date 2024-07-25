@@ -31,7 +31,7 @@ def save_checkpoint_state():
         "lr_scheduler": lr_scheduler.state_dict(),
         "completed_steps": completed_steps,
         "run_name": run_name,
-        "optimizer": optimizer
+        "optimizer": optimizer.state_dict()
     }
     torch.save(checkpoint, f"torch_checkpoint/latest_checkpoint.pth")
 
@@ -44,7 +44,7 @@ def load_checkpoint_torch(lr_scheduler, completed_steps, run_name, optimizer):
     run_name = checkpoint["run_name"]
     optimizer.load_state_dict(checkpoint["optimizer"])
 
-    return step, lr_scheduler, completed_steps, run_name, optimizer
+    return lr_scheduler, completed_steps, run_name, optimizer
 
 
 class ConstantLengthDataset(IterableDataset):
@@ -235,7 +235,7 @@ lr_scheduler, completed_steps, run_name, optimizer = load_checkpoint_torch(lr_sc
 print(lr_scheduler)
 print(run_name)
 
-logger, tb_writer, run_name = continue_logging(project_name, run_name)
+logger, tb_writer, run_name = continue_logging(project_name.split("/")[1], run_name)
 
 
 # Load model and tokenizer
@@ -288,7 +288,6 @@ for step, batch in enumerate(train_dataloader, start=completed_steps + 1):
         if accelerator.is_main_process:
             save_checkpoint_state(step)
             unwrapped_model.save_pretrained("./")
-            accelerator.save_state(output_dir="my_checkpoint")
             hf_repo.push_to_hub(commit_message=f"step {step}")
         model.train()
     if completed_steps >= args.max_train_steps:
