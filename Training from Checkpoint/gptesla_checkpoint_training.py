@@ -60,30 +60,36 @@ def setup_logging(project_name):
     return logger, tb_writer, run_name
 """
 
-# dataloaders. Not needed
-""" 
-def create_dataloaders(dataset_name):
-    train_data = load_dataset(dataset_name + "-train", split="train", streaming=True)
-    train_data = train_data.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)
-    valid_data = load_dataset(
-        dataset_name + "-valid", split="validation", streaming=True
-    )
 
-    train_dataset = ConstantLengthDataset(
-        tokenizer, train_data, seq_length=args.seq_length
-    )
-    valid_dataset = ConstantLengthDataset(
-        tokenizer, valid_data, seq_length=args.seq_length
-    )
+def checkpoint_state():
 
-    train_dataloader = DataLoader(
-        train_dataset, batch_size=args.train_batch_size, num_workers=96
-    )
-    eval_dataloader = DataLoader(
-        valid_dataset, batch_size=args.valid_batch_size, num_workers=1
-    )
-    return train_dataloader, eval_dataloader
-"""
+    checkpoint = {
+        "lr_scheduler": lr_scheduler.state_dict(),
+        "completed_steps": completed_steps,
+        "logger": logger,
+        "tb_writer": tb_writer,
+        "run_name": run_name,
+    }
+    torch.save(checkpoint, f"checkpoint_{step}.pth")
+    # Use Accelerate's built-in method if it covers all needs
+    accelerator.save_state(output_dir="my_checkpoint")
+
+
+def continue_logging(project_name, run_name, logger):
+    # for tb_writer and logger will just use the states loaded from torch.save()
+    # will only try to resume wandb
+
+    wandb.resume(run_name=run_name)
+
+    if accelerator.is_main_process:  # We only want to set up logging once
+        wandb.init(project=project_name, config=args, dir="./../")
+        logger.setLevel(logging.INFO)
+        datasets.utils.logging.set_verbosity_debug()
+        transformers.utils.logging.set_verbosity_info()
+    else:
+        logger.setLevel(logging.ERROR)
+        datasets.utils.logging.set_verbosity_error()
+        transformers.utils.logging.set_verbosity_error()
 
 
 def log_metrics(step, metrics):
@@ -91,19 +97,6 @@ def log_metrics(step, metrics):
     if accelerator.is_main_process:
         wandb.log(metrics)
         [tb_writer.add_scalar(k, v, step) for k, v in metrics.items()]
-
-
-def get_grouped_params(model, no_decay=["bias", "LayerNorm.weight"]):
-    params_with_wd, params_without_wd = [], []
-    for n, p in model.named_parameters():
-        if any(nd in n for nd in no_decay):
-            params_without_wd.append(p)
-        else:
-            params_with_wd.append(p)
-    return [
-        {"params": params_with_wd, "weight_decay": args.weight_decay},
-        {"params": params_without_wd, "weight_decay": 0.0},
-    ]
 
 
 def evaluate():
@@ -155,13 +148,11 @@ samples_per_step = accelerator.state.num_processes * args.train_batch_size
 set_seed(args.seed)
 
 # Logging
-logger, tb_writer, run_name = setup_logging(project_name.split("/")[1])
+logger, tb_writer, run_name = "SETUP NEEDED"
 logger.info(accelerator.state)
 
 # Load model and tokenizer
 if accelerator.is_main_process:
-    new_branch_name = run_name
-    create_branch(project_name, repo_type="model", branch=new_branch_name)
     hf_repo = Repository("./", clone_from=project_name, revision=run_name)
 
 model = AutoModelForCausalLM.from_pretrained("./")  # , gradient_checkpointing=True)
@@ -170,29 +161,38 @@ tokenizer = AutoTokenizer.from_pretrained("./")
 # Load dataset and dataloader
 train_dataloader, eval_dataloader = create_dataloaders(dataset_name)
 
-# Prepare the optimizer and learning rate scheduler
-optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
-lr_scheduler = get_scheduler(
-    name=args.lr_scheduler_type,
-    optimizer=optimizer,
-    num_warmup_steps=args.num_warmup_steps,
-    num_training_steps=args.max_train_steps,
-)
+# Load optimizer and learning rate scheduler
+optimizer = ""  # likely no longer needed
+lr_scheduler = ""
 
 
 def get_lr():
     return optimizer.param_groups[0]["lr"]
 
 
+"""
+- completed_steps
+"""
+
 # Prepare everything with our `accelerator` (order of args is not important)
 model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
     model, optimizer, train_dataloader, eval_dataloader
 )
 
+
+# advancing dataloader to correct position
+completed_steps = ""
+
+for i, _ in enumerate(train_dataloader):
+    if i >= completed_steps - 1:
+        break
+for i, _ in enumerate(eval_dataloader):
+    if i >= (completed_steps // args.save_checkpoint_steps) * args.max_eval_steps - 1:
+        break
+
 # Train model
 model.train()
-completed_steps = 0
-for step, batch in enumerate(train_dataloader, start=1):
+for step, batch in enumerate(train_dataloader, start=completed_steps + 1):
     loss = model(batch, labels=batch).loss
     log_metrics(
         step,
