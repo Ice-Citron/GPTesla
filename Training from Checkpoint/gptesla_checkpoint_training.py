@@ -36,9 +36,9 @@ def save_checkpoint_state():
     torch.save(checkpoint, f"torch_checkpoint/latest_checkpoint.pth")
 
 
-def load_checkpoint_torch(step, lr_scheduler, completed_steps, run_name, optimizer):
+def load_checkpoint_torch(lr_scheduler, completed_steps, run_name, optimizer):
 
-    checkpoint = torch.load(f"torch_checkpoint/checkpoint_{step}.pth")
+    checkpoint = torch.load(f"torch_checkpoint/latest_checkpoint.pth")
     lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
     completed_steps = checkpoint["completed_steps"]
     run_name = checkpoint["run_name"]
@@ -221,7 +221,6 @@ train_dataloader, eval_dataloader = create_dataloaders(dataset_name)
 
 
 # Loading torch checkpoint
-current_step = int(input("latest_step"))
 optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
 lr_scheduler = get_scheduler(
     name=args.lr_scheduler_type,
@@ -231,9 +230,8 @@ lr_scheduler = get_scheduler(
 )
 completed_steps = 0
 run_name = ""
-lr_scheduler, completed_steps, run_name, optimizer = load_checkpoint_torch(current_step, lr_scheduler, completed_steps, run_name, optimizer)
+lr_scheduler, completed_steps, run_name, optimizer = load_checkpoint_torch(lr_scheduler, completed_steps, run_name, optimizer)
 
-print(current_step)
 print(lr_scheduler)
 print(run_name)
 
