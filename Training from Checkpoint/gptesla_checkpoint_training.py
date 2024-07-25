@@ -31,20 +31,22 @@ def save_checkpoint_state():
         "lr_scheduler": lr_scheduler.state_dict(),
         "completed_steps": completed_steps,
         "run_name": run_name,
-        "optimizer": optimizer.state_dict()
+        "optimizer": optimizer.state_dict(),
+        "run_id": wandb_id
     }
     torch.save(checkpoint, f"torch_checkpoint/latest_checkpoint.pth")
 
 
-def load_checkpoint_torch(lr_scheduler, completed_steps, run_name, optimizer):
+def load_checkpoint_torch(lr_scheduler, completed_steps, run_name, optimizer, wandb_id):
 
     checkpoint = torch.load(f"torch_checkpoint/latest_checkpoint.pth")
     lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
     completed_steps = checkpoint["completed_steps"]
     run_name = checkpoint["run_name"]
     optimizer.load_state_dict(checkpoint["optimizer"])
+    wandb_id = checkpoint["run_id"]
 
-    return lr_scheduler, completed_steps, run_name, optimizer
+    return lr_scheduler, completed_steps, run_name, optimizer, wandb_id
 
 
 class ConstantLengthDataset(IterableDataset):
@@ -94,7 +96,7 @@ class ConstantLengthDataset(IterableDataset):
                     yield torch.tensor(input_ids)
 
 
-def continue_logging(project_name, run_name):
+def continue_logging(project_name, run_id):
     logger = logging.getLogger(__name__)
 
     dir_name = "./log"
@@ -117,7 +119,7 @@ def continue_logging(project_name, run_name):
 
     if accelerator.is_main_process:  # We only want to set up logging once
         #wandb.init(project=project_name, config=args, dir="./../")
-        wandb.init(project=project_name, id=run_name, resume="must", config=args, dir='./../')
+        wandb.init(project=project_name, id=run_id, resume="must", config=args, dir='./../')
         run_name = wandb.run.name
         tb_writer = SummaryWriter()
         tb_writer.add_hparams(vars(args), {"0": 0})
@@ -131,7 +133,7 @@ def continue_logging(project_name, run_name):
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
-        return logger, tb_writer, run_name
+    return logger, tb_writer, run_name
     
 def create_dataloaders(dataset_name):
     train_data = load_dataset(dataset_name + "-train", split="train", streaming=True)
@@ -230,12 +232,10 @@ lr_scheduler = get_scheduler(
 )
 completed_steps = 0
 run_name = ""
-lr_scheduler, completed_steps, run_name, optimizer = load_checkpoint_torch(lr_scheduler, completed_steps, run_name, optimizer)
+wandb_id = ""
+lr_scheduler, completed_steps, run_name, optimizer, wandb_id = load_checkpoint_torch(lr_scheduler, completed_steps, run_name, optimizer, wandb_id)
 
-print(lr_scheduler)
-print(run_name)
-
-logger, tb_writer, run_name = continue_logging(project_name.split("/")[1], run_name)
+logger, tb_writer, run_name = continue_logging(project_name.split("/")[1], wandb_id)
 
 
 # Load model and tokenizer

@@ -107,7 +107,7 @@ def setup_logging(project_name):
     if accelerator.is_main_process:  # We only want to set up logging once
         wandb.init(project=project_name, config=args, dir="./../")
         run_name = wandb.run.name
-        run_id = wandb.run.id
+        wandb_id = wandb.run.id
         tb_writer = SummaryWriter()
         tb_writer.add_hparams(vars(args), {"0": 0})
         logger.setLevel(logging.INFO)
@@ -116,10 +116,11 @@ def setup_logging(project_name):
     else:
         tb_writer = None
         run_name = ""
+        wandb_id = ""
         logger.setLevel(logging.ERROR)
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
-    return logger, tb_writer, run_name, run_id
+    return logger, tb_writer, run_name, wandb_id
 
 
 def create_dataloaders(dataset_name):
@@ -238,7 +239,6 @@ model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
     model, optimizer, train_dataloader, eval_dataloader
 )
 
-print(wandb_id)
 
 # Train model
 model.train()
