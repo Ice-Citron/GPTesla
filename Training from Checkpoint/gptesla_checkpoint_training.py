@@ -1,3 +1,13 @@
+"""
+This file is constructed so that one can easily continue pre training their checkpointed model on HF repo.
+So that even in the event of a model crash, one can easily continue training based on the current state! Very convenient!
+
+How to use:
+1. git clone the repo
+2. git checkout to current branch
+3. accelerate config, then accelerate run!
+"""
+
 import os
 
 import datasets, transformers
@@ -286,7 +296,7 @@ for step, batch in enumerate(train_dataloader, start=completed_steps + 1):
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
         if accelerator.is_main_process:
-            save_checkpoint_state(step)
+            save_checkpoint_state()
             unwrapped_model.save_pretrained("./")
             hf_repo.push_to_hub(commit_message=f"step {step}")
         model.train()
