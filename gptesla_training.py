@@ -193,11 +193,11 @@ config = {
     "lr_scheduler_type": "cosine",
     "num_warmup_steps": 700,  # 2000
     "gradient_accumulation_steps": 1,  # 1
-    "max_train_steps": 50000,  # 150000
+    "max_train_steps": 150000,  # 150000
     "max_eval_steps": 10,
     "seq_length": 1024,
     "seed": 1,
-    "save_checkpoint_steps": 50,
+    "save_checkpoint_steps": 10000,
 }  # 15000
 
 args = Namespace(**config, **acc_state)
