@@ -11,6 +11,7 @@ Hence, I have decided to do the next best thing, which I had spent 4 hours, for 
 
 # GPTesla
 https://www.youtube.com/watch?v=NQfp2KT9kEU
+
 46:06 to 1:00:00
 https://www.youtube.com/watch?v=1OhGDyw3_eo&t=3s
 0:00 to 46:36
